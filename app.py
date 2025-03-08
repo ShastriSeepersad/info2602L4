@@ -65,8 +65,7 @@ def login_required(required_class):
     @wraps(f)
     @jwt_required()  # Ensure JWT authentication
     def decorated_function(*args, **kwargs):
-      user = required_class.query.filter_by(username=get_jwt_identity()).first()
-      print(user.__class__, required_class, user.__class__ == required_class)
+      user = User.query.get(get_jwt_identity())
       if user.__class__ != required_class:  # Check class equality
         return jsonify(message='Invalid user role'), 403
       return f(*args, **kwargs)
@@ -92,12 +91,10 @@ def login_user(username, password):
 def login_page():
   return render_template('login.html')
 
-
 @app.route('/app', methods=['GET'])
 @jwt_required()
 def todos_page():
   return render_template('todo.html', current_user=current_user)
-
 
 @app.route('/signup', methods=['GET'])
 def signup_page():
@@ -116,11 +113,114 @@ def edit_todo_page(id):
   flash('Todo not found or unauthorized')
   return redirect(url_for('todos_page'))
 
+@app.route('/admin')
+@login_required(Admin)
+def admin_page():
+  page = request.args.get('page', 1, type=int)
+  q = request.args.get('q', default='', type=str)
+  done = request.args.get('done', default='any', type=str)
+  todos = current_user.search_todos(q, done, page)
+  return render_template('admin.html', todos=todos, q=q, page=page, done=done)
 
 # Action Routes
+@app.route('/signup', methods=['POST'])
+def signup_action():
+  data = request.form  # get data from form submission
+  newuser = RegularUser(username=data['username'], email=data['email'], password=data['password'])  # create user object
+  response = None
+  try:
+    db.session.add(newuser)
+    db.session.commit()  # save user
+    token = login_user(data['username'], data['password'])
+    response = redirect(url_for('todos_page'))
+    set_access_cookies(response, token)
+    flash('Account Created!')  # send message
+  except Exception:  # attempted to insert a duplicate user
+    db.session.rollback()
+    flash("username or email already exists")  # error message
+    response = redirect(url_for('login_page'))
+  return response
 
 
+@app.route('/login', methods=['POST'])
+def login_action():
+  data = request.form
+  token = login_user(data['username'], data['password'])
+  response = None
+  user = User.query.filter_by(username=data['username']).first()
+  if token:
+    flash('Logged in successfully.')  # send message to next page
+    if user.type == "regular user":
+      response = redirect(url_for('todos_page'))
+    else :
+      response = redirect(url_for('admin_page'))  # redirect to main page if login successful
+    set_access_cookies(response, token)
+  else:
+    flash('Invalid username or password')  # send message to next page
+    response = redirect(url_for('login_page'))
+  return response
 
+
+@app.route('/toggle/<id>', methods=['POST'])
+@jwt_required()
+def toggle_todo_action(id):
+  todo = current_user.toggle_todo(id)
+  if todo is None:
+    flash('Invalid id or unauthorized')
+  else:
+    flash(f'Todo { "done" if todo.done else "not done" }!')
+  return redirect(url_for('todos_page'))
+
+
+@app.route('/createTodo', methods=['POST'])
+@jwt_required()
+def create_todo_action():
+  data = request.form
+  current_user.add_todo(data['text'])
+  flash('Created')
+  return redirect(url_for('todos_page'))
+
+
+@app.route('/deleteTodo/<id>', methods=["GET"])
+@jwt_required()
+def delete_todo_action(id):
+  res = current_user.delete_todo(id)
+  if res == None:
+    flash('Invalid id or unauthorized')
+  else:
+    flash('Todo Deleted')
+  return redirect(url_for('todos_page'))
+
+
+@app.route('/editTodo/<id>', methods=["POST"])
+@jwt_required()
+def edit_todo_action(id):
+  data = request.form
+  res = current_user.update_todo(id, data["text"])
+  if res:
+    flash('Todo Updated!')
+  else:
+    flash('Todo not found or unauthorized')
+  return redirect(url_for('todos_page'))
+
+
+@app.route('/logout', methods=['GET'])
+@jwt_required()
+def logout_action():
+  flash('Logged Out')
+  response = redirect(url_for('login_page'))
+  unset_jwt_cookies(response)
+  return response
+
+@app.route('/todo-stats', methods=["GET"])
+@login_required(Admin)
+def todo_stats():
+  return jsonify(current_user.get_todo_stats())
+
+@app.route('/stats')
+@login_required(Admin)
+def stats_page():
+  return render_template('stats.html')
 
 
 if __name__ == "__main__":
